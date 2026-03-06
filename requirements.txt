@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+sqlalchemy
+psycopg2-binary
+python-dotenv
+apscheduler
+yfinance
+streamlit
+plotly
