@@ -1,0 +1,15 @@
+pandas
+numpy
+requests
+yfinance
+scikit-learn
+joblib
+stable-baselines3
+gymnasium
+torch
+sqlalchemy
+python-dotenv
+psycopg2-binary
+pyarrow
+plotly
+streamlit
