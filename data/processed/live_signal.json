@@ -1,8 +1,8 @@
 {
-  "ts": "2026-03-10 10:27:33.216653",
+  "ts": "2026-03-10 10:39:38.473616",
   "regime": "high_vol",
-  "last_close": 24161.9,
+  "last_close": 24193.2,
   "baseline_signal": "SHORT",
-  "baseline_prob_up": 0.4057,
+  "baseline_prob_up": 0.4491,
   "rl_signal": "LONG"
 }
