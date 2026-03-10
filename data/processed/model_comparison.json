@@ -1,0 +1,17 @@
+{
+  "baseline":{
+    "final_equity":1.0984848157,
+    "total_return":0.0984848157,
+    "max_drawdown":-0.0089253774,
+    "sharpe_like":0.2019902699,
+    "num_rows":310
+  },
+  "rl":{
+    "final_equity":1.0190753342,
+    "total_return":0.0190753342,
+    "max_drawdown":-0.0068219359,
+    "sharpe_like":0.1698954223,
+    "num_rows":92
+  },
+  "winner":"baseline"
+}
