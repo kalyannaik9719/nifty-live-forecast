@@ -11,32 +11,54 @@ FEATURES = [
     "close_sma20_gap",
     "range",
     "hour",
-    "minute"
+    "minute",
+    "regime_code",
+    "vix",
+    "vix_regime_code",
+    "lstm_pred_return",
+    "bnn_mean_return",
+    "bnn_std_return",
+    "baseline_prob_up",
 ]
+
 
 class NiftyTradingEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, df: pd.DataFrame, cost: float = 0.0002, flat_penalty: float = 0.00005):
+    def __init__(self, df: pd.DataFrame, cost: float = 0.0002):
         super().__init__()
-
         self.df = df.reset_index(drop=True).copy()
         self.cost = cost
-        self.flat_penalty = flat_penalty
+
+        defaults = {
+            "regime_code": 0.0,
+            "vix": 15.0,
+            "vix_regime_code": 0.0,
+            "lstm_pred_return": 0.0,
+            "bnn_mean_return": 0.0,
+            "bnn_std_return": 0.01,
+            "baseline_prob_up": 0.5,
+        }
+        for col, default in defaults.items():
+            if col not in self.df.columns:
+                self.df[col] = default
+
+        self.df = self.df.replace([np.inf, -np.inf], np.nan).dropna(subset=["close"] + FEATURES).reset_index(drop=True)
+        if len(self.df) < 3:
+            raise ValueError("Not enough rows for RL environment.")
 
         self.current_step = 0
         self.position = 0  # -1 short, 0 flat, 1 long
 
-        self.action_space = spaces.Discrete(3)  # 0=short, 1=flat, 2=long
-
+        self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
             shape=(len(FEATURES) + 1,),
-            dtype=np.float32
+            dtype=np.float32,
         )
 
-    def _get_observation(self):
+    def _get_obs(self):
         row = self.df.loc[self.current_step, FEATURES].astype(float).values
         return np.array(list(row) + [self.position], dtype=np.float32)
 
@@ -44,26 +66,41 @@ class NiftyTradingEnv(gym.Env):
         super().reset(seed=seed)
         self.current_step = 0
         self.position = 0
-        return self._get_observation(), {}
+        return self._get_obs(), {}
 
     def step(self, action):
-        new_position = {0: -1, 1: 0, 2: 1}[int(action)]
+        action_map = {0: -1, 1: 0, 2: 1}
+        new_position = action_map[int(action)]
 
         price_now = float(self.df.loc[self.current_step, "close"])
         price_next = float(self.df.loc[self.current_step + 1, "close"])
-
         raw_return = (price_next / price_now) - 1.0
 
-        trade_penalty = self.cost if new_position != self.position else 0.0
+        regime_code = float(self.df.loc[self.current_step, "regime_code"])
+        vix = float(self.df.loc[self.current_step, "vix"])
+        bnn_std = float(self.df.loc[self.current_step, "bnn_std_return"])
 
-        # Base PnL reward
-        reward = new_position * raw_return - trade_penalty
+        reward = new_position * raw_return
 
-        # Small penalty for staying flat
-        if new_position == 0:
-            reward -= self.flat_penalty
+        if new_position != self.position:
+            reward -= self.cost
 
-        # Bonus for correct directional action
+        # trending markets: discourage flat
+        if regime_code in (0.5, -0.5) and new_position == 0:
+            reward -= 0.00003
+
+        # sideways: discourage overtrading
+        if regime_code == 0.0 and new_position != 0:
+            reward -= 0.00005
+
+        # elevated/panic vol: discourage aggressive positions
+        if vix >= 18 and new_position != 0:
+            reward -= 0.00008
+
+        # uncertainty penalty
+        reward -= min(0.0002, bnn_std * 0.5)
+
+        # directional bonus
         if raw_return > 0 and new_position == 1:
             reward += 0.0001
         elif raw_return < 0 and new_position == -1:
@@ -75,14 +112,11 @@ class NiftyTradingEnv(gym.Env):
         terminated = self.current_step >= len(self.df) - 2
         truncated = False
 
-        obs = self._get_observation()
-        info = {
+        return self._get_obs(), reward, terminated, truncated, {
             "position": self.position,
             "raw_return": raw_return,
-            "reward": reward
+            "reward": reward,
         }
-
-        return obs, reward, terminated, truncated, info
 
     def render(self):
         pass

@@ -1,8 +1,30 @@
 {
-  "ts": "2026-03-10 11:52:15.589651",
+  "ts": "2026-03-12 14:48:35.283068",
+  "last_close": 23661.35,
   "regime": "high_vol",
-  "last_close": 24201.3,
+  "vix": 21.63,
+  "vix_regime": "elevated",
   "baseline_signal": "SHORT",
-  "baseline_prob_up": 0.4302,
-  "rl_signal": "LONG"
+  "baseline_prob_up": 0.43249413522044206,
+  "rl_signal": "LONG",
+  "trend_agent": "NA",
+  "mean_reversion_agent": "NA",
+  "volatility_agent": "NA",
+  "final_agent_vote": "NA",
+  "lstm_direction": "SHORT",
+  "lstm_pred_return": -0.007883265614509583,
+  "lstm_confidence": 1.0,
+  "bnn_direction": "NA",
+  "bnn_mean_return": 0.0,
+  "bnn_std_return": null,
+  "bnn_confidence": null,
+  "final_signal": "HOLD",
+  "reason": "High volatility disagreement",
+  "buy_level": null,
+  "sell_level": null,
+  "position_size": 0.0,
+  "warnings": [
+    "High volatility regime",
+    "Baseline/RL disagreement"
+  ]
 }

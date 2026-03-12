@@ -1,298 +1,200 @@
 import sys
 from pathlib import Path
-
-# ---------- Fix import path for Streamlit Cloud ----------
-ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
 import json
-from datetime import datetime
-
-import joblib
 import pandas as pd
 import plotly.express as px
-import requests
 import streamlit as st
-from stable_baselines3 import PPO
 
-from rl.trading_env import NiftyTradingEnv
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
-
-# ----------------------------
-# Paths
-# ----------------------------
+LIVE_SIGNAL_PATH = Path("data/processed/live_signal.json")
+LEDGER_PATH = Path("data/processed/live_trade_ledger.parquet")
 BASELINE_PATH = Path("data/processed/paper_trades.parquet")
 RL_PATH = Path("data/processed/rl_trades.parquet")
 COMPARE_PATH = Path("data/processed/model_comparison.json")
-REGIME_PATH = Path("data/processed/nifty_regimes.parquet")
-HIST_PATH = Path("data/processed/nifty_regimes.parquet")
 
-BASELINE_MODEL_PATH = Path("data/processed/baseline_model.pkl")
-RL_MODEL_PATH = Path("data/processed/ppo_nifty")
+st.set_page_config(page_title="NIFTY Institutional AI Dashboard", layout="wide")
+st.title("NIFTY Institutional AI Dashboard")
 
+# =========================================================
+# LIVE SIGNAL ENGINE
+# =========================================================
+st.subheader("Live Decision Engine")
 
-# ----------------------------
-# Page
-# ----------------------------
-st.set_page_config(page_title="NIFTY50 Research Dashboard", layout="wide")
+if LIVE_SIGNAL_PATH.exists():
+    with open(LIVE_SIGNAL_PATH, "r") as f:
+        signal = json.load(f)
 
-st.title("NIFTY50 Live Research Dashboard")
-st.subheader("Live Signal Engine")
+    last_close = signal.get("last_close", 0)
+    regime = signal.get("regime", "unknown")
+    vix = signal.get("vix", None)
+    vix_regime = signal.get("vix_regime", "unknown")
 
+    baseline_signal = signal.get("baseline_signal", "NA")
+    baseline_prob = signal.get("baseline_prob_up", None)
 
-# ----------------------------
-# NSE LIVE FETCH
-# ----------------------------
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://www.nseindia.com/",
-}
+    rl_signal = signal.get("rl_signal", "NA")
 
+    trend_agent = signal.get("trend_agent", "NA")
+    mean_agent = signal.get("mean_reversion_agent", "NA")
+    vol_agent = signal.get("volatility_agent", "NA")
+    final_agent_vote = signal.get("final_agent_vote", "NA")
 
-@st.cache_data(ttl=30)
-def fetch_nse():
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    final_signal = signal.get("final_signal", "NA")
+    reason = signal.get("reason", "NA")
 
-    warmup = "https://www.nseindia.com/market-data/live-equity-market"
-    session.get(warmup)
+    lstm_direction = signal.get("lstm_direction", "NA")
+    lstm_pred_return = signal.get("lstm_pred_return", None)
 
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-    r = session.get(url)
-    data = r.json()
+    bnn_direction = signal.get("bnn_direction", "NA")
+    bnn_confidence = signal.get("bnn_confidence", None)
+    bnn_std = signal.get("bnn_std_return", None)
 
-    row = data["data"][0]
+    buy_level = signal.get("buy_level", None)
+    sell_level = signal.get("sell_level", None)
 
-    df = pd.DataFrame(
-        [
-            {
-                "ts": datetime.now(),
-                "close": row["lastPrice"],
-                "open": row["open"],
-                "high": row["dayHigh"],
-                "low": row["dayLow"],
-                "volume": 0,
-                "change": row["change"],
-                "pChange": row["pChange"],
-            }
-        ]
-    )
+    position_size = signal.get("position_size", None)
+    warnings_list = signal.get("warnings", [])
 
-    return df
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Last Close", f"{last_close:.2f}")
+    c2.metric("Final Signal", final_signal)
+    c3.metric("Reason", reason)
+    c4.metric("Regime", regime)
 
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("VIX", "NA" if vix is None else f"{vix:.2f}")
+    c6.metric("VIX Regime", vix_regime)
+    c7.metric("Baseline Signal", baseline_signal)
+    c8.metric("RL Signal", rl_signal)
 
-# ----------------------------
-# FEATURE ENGINEERING
-# ----------------------------
-def build_features():
+    c9, c10, c11, c12 = st.columns(4)
+    c9.metric("Trend Agent", trend_agent)
+    c10.metric("Mean Reversion Agent", mean_agent)
+    c11.metric("Volatility Agent", vol_agent)
+    c12.metric("Agent Vote", final_agent_vote)
 
-    hist = pd.read_parquet(HIST_PATH)
-    live = fetch_nse()
+    c13, c14, c15, c16 = st.columns(4)
+    c13.metric("LSTM Direction", lstm_direction)
+    c14.metric("BNN Direction", bnn_direction)
+    c15.metric("Buy Level", "NA" if buy_level is None else f"{buy_level:.2f}")
+    c16.metric("Sell Level", "NA" if sell_level is None else f"{sell_level:.2f}")
 
-    hist["ts"] = pd.to_datetime(hist["ts"]).dt.tz_localize(None)
-    live["ts"] = pd.to_datetime(live["ts"]).dt.tz_localize(None)
+    c17, c18, c19, c20 = st.columns(4)
+    c17.metric("Baseline Prob Up", "NA" if baseline_prob is None else f"{baseline_prob:.2%}")
+    c18.metric("BNN Confidence", "NA" if bnn_confidence is None else f"{bnn_confidence:.2%}")
+    c19.metric("BNN Std", "NA" if bnn_std is None else f"{bnn_std:.5f}")
+    c20.metric("Position Size", "NA" if position_size is None else f"{position_size:.2%}")
 
-    hist = hist[["ts", "open", "high", "low", "close", "volume"]].tail(50)
+    if lstm_pred_return is not None:
+        st.info(f"LSTM Predicted Return: {lstm_pred_return:.5f}")
 
-    df = pd.concat([hist, live], ignore_index=True)
-    df = df.sort_values("ts")
+    if warnings_list:
+        st.warning(" | ".join(warnings_list))
 
-    df["ret1"] = df["close"].pct_change()
-    df["ret5"] = df["close"].pct_change(5)
+    st.caption(f"Last update: {signal.get('ts', 'unknown')}")
 
-    df["sma5"] = df["close"].rolling(5).mean()
-    df["sma20"] = df["close"].rolling(20).mean()
+else:
+    st.warning("Live signal file not found.")
 
-    df["ema12"] = df["close"].ewm(span=12).mean()
-
-    df["volatility"] = df["ret1"].rolling(12).std()
-
-    df["close_sma5_gap"] = (df["close"] - df["sma5"]) / df["sma5"]
-    df["close_sma20_gap"] = (df["close"] - df["sma20"]) / df["sma20"]
-
-    df["range"] = df["high"] - df["low"]
-
-    df["hour"] = pd.to_datetime(df["ts"]).dt.hour
-    df["minute"] = pd.to_datetime(df["ts"]).dt.minute
-
-    vol75 = df["volatility"].quantile(0.75)
-
-    def regime(row):
-
-        if pd.isna(row["volatility"]):
-            return "unknown"
-
-        if row["volatility"] > vol75:
-            return "high_vol"
-
-        if row["close_sma20_gap"] > 0.002:
-            return "bull"
-
-        if row["close_sma20_gap"] < -0.002:
-            return "bear"
-
-        return "sideways"
-
-    df["regime"] = df.apply(regime, axis=1)
-
-    return df.tail(1)
-
-
-# ----------------------------
-# SIGNAL ENGINE
-# ----------------------------
-def generate_signal():
-
-    live = build_features()
-
-    features = [
-        "ret1",
-        "ret5",
-        "sma5",
-        "sma20",
-        "ema12",
-        "volatility",
-        "close_sma5_gap",
-        "close_sma20_gap",
-        "range",
-        "hour",
-        "minute",
-    ]
-
-    baseline = joblib.load(BASELINE_MODEL_PATH)
-
-    prob_up = baseline.predict_proba(live[features])[0][1]
-
-    if prob_up > 0.55:
-        baseline_signal = "LONG"
-
-    elif prob_up < 0.45:
-        baseline_signal = "SHORT"
-
-    else:
-        baseline_signal = "HOLD"
-
-    rl_df = pd.concat([live] * 3)
-
-    env = NiftyTradingEnv(rl_df)
-
-    obs, _ = env.reset()
-
-    model = PPO.load(str(RL_MODEL_PATH))
-
-    action, _ = model.predict(obs, deterministic=True)
-
-    action_map = {0: "SHORT", 1: "HOLD", 2: "LONG"}
-
-    rl_signal = action_map[int(action)]
-
-    return {
-        "ts": str(live["ts"].iloc[-1]),
-        "close": float(live["close"].iloc[-1]),
-        "regime": live["regime"].iloc[-1],
-        "baseline_signal": baseline_signal,
-        "baseline_prob": prob_up,
-        "rl_signal": rl_signal,
-    }
-
-
-# ----------------------------
-# SHOW LIVE SIGNAL
-# ----------------------------
-try:
-
-    signal = generate_signal()
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-
-    c1.metric("Last Close", f"{signal['close']:.2f}")
-    c2.metric("Regime", signal["regime"])
-    c3.metric("Baseline", signal["baseline_signal"])
-    c4.metric("RL Signal", signal["rl_signal"])
-    c5.metric("Prob Up", f"{signal['baseline_prob']:.2%}")
-
-    st.caption(f"Last update: {signal['ts']}")
-
-except Exception as e:
-
-    st.warning(f"Live engine error: {e}")
-
-
-# ----------------------------
-# BACKTEST DASHBOARD
-# ----------------------------
 st.divider()
 
-st.header("Backtest Comparison")
+# =========================================================
+# MODEL COMPARISON
+# =========================================================
+st.subheader("Backtest Model Comparison")
 
-baseline_df = pd.read_parquet(BASELINE_PATH)
-rl_df = pd.read_parquet(RL_PATH)
+if BASELINE_PATH.exists() and RL_PATH.exists():
+    baseline_df = pd.read_parquet(BASELINE_PATH)
+    rl_df = pd.read_parquet(RL_PATH)
 
-compare = {}
+    compare = {}
+    if COMPARE_PATH.exists():
+        with open(COMPARE_PATH, "r") as f:
+            compare = json.load(f)
 
-if COMPARE_PATH.exists():
+    baseline_equity = float(baseline_df["equity_curve"].iloc[-1])
+    rl_equity = float(rl_df["equity_curve"].iloc[-1])
 
-    with open(COMPARE_PATH) as f:
+    baseline_dd = (
+        (baseline_df["equity_curve"] - baseline_df["equity_curve"].cummax())
+        / baseline_df["equity_curve"].cummax()
+    ).min()
 
-        compare = json.load(f)
+    rl_dd = (
+        (rl_df["equity_curve"] - rl_df["equity_curve"].cummax())
+        / rl_df["equity_curve"].cummax()
+    ).min()
 
-col1, col2, col3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Baseline Equity", f"{baseline_equity:.4f}")
+    m2.metric("RL Equity", f"{rl_equity:.4f}")
+    m3.metric("Baseline Drawdown", f"{baseline_dd:.2%}")
+    m4.metric("RL Drawdown", f"{rl_dd:.2%}")
 
-baseline_equity = baseline_df["equity_curve"].iloc[-1]
-rl_equity = rl_df["equity_curve"].iloc[-1]
+    st.metric("Winner", compare.get("winner", "unknown"))
 
-col1.metric("Baseline Equity", f"{baseline_equity:.4f}")
-col2.metric("RL Equity", f"{rl_equity:.4f}")
-col3.metric("Winner", compare.get("winner", "unknown"))
+    st.subheader("Equity Curve Comparison")
 
+    bp = baseline_df.copy()
+    rp = rl_df.copy()
+    bp["model"] = "Baseline"
+    rp["model"] = "RL"
 
-# ----------------------------
-# EQUITY CURVE
-# ----------------------------
-baseline_plot = baseline_df.copy()
-baseline_plot["model"] = "Baseline"
+    if "ts" in bp.columns and "ts" in rp.columns:
+        bp["ts"] = pd.to_datetime(bp["ts"])
+        rp["ts"] = pd.to_datetime(rp["ts"])
 
-rl_plot = rl_df.copy()
-rl_plot["model"] = "RL"
+        plot_df = pd.concat(
+            [
+                bp[["ts", "equity_curve", "model"]],
+                rp[["ts", "equity_curve", "model"]],
+            ],
+            ignore_index=True,
+        )
+        fig = px.line(plot_df, x="ts", y="equity_curve", color="model")
+    else:
+        bp["idx"] = range(len(bp))
+        rp["idx"] = range(len(rp))
+        plot_df = pd.concat(
+            [
+                bp[["idx", "equity_curve", "model"]],
+                rp[["idx", "equity_curve", "model"]],
+            ],
+            ignore_index=True,
+        )
+        fig = px.line(plot_df, x="idx", y="equity_curve", color="model")
 
-baseline_plot["ts"] = pd.to_datetime(baseline_plot["ts"])
-rl_plot["ts"] = pd.to_datetime(rl_plot["ts"])
+    st.plotly_chart(fig, width="stretch")
 
-plot = pd.concat(
-    [
-        baseline_plot[["ts", "equity_curve", "model"]],
-        rl_plot[["ts", "equity_curve", "model"]],
-    ]
-)
+else:
+    st.warning("Backtest files not available yet.")
 
-fig = px.line(plot, x="ts", y="equity_curve", color="model")
+st.divider()
 
-st.plotly_chart(fig, width="stretch")
-
-
-# ----------------------------
+# =========================================================
 # RL ACTION DISTRIBUTION
-# ----------------------------
-st.subheader("RL Actions")
+# =========================================================
+if RL_PATH.exists():
+    st.subheader("RL Action Distribution")
 
-action_map = {0: "Short", 1: "Flat", 2: "Long"}
+    rl_df = pd.read_parquet(RL_PATH)
+    if "action" in rl_df.columns:
+        action_map = {0: "Short", 1: "Flat", 2: "Long"}
+        actions = rl_df["action"].map(action_map).value_counts().reset_index()
+        actions.columns = ["action", "count"]
 
-dist = rl_df["action"].map(action_map).value_counts().reset_index()
+        fig2 = px.bar(actions, x="action", y="count")
+        st.plotly_chart(fig2, width="stretch")
 
-dist.columns = ["action", "count"]
+st.divider()
 
-fig2 = px.bar(dist, x="action", y="count")
-
-st.plotly_chart(fig2, width="stretch")
-
-
-# ----------------------------
-# TABLES
-# ----------------------------
-st.subheader("Latest RL Trades")
-st.dataframe(rl_df.tail(20), width="stretch")
-
-st.subheader("Latest Baseline Trades")
-st.dataframe(baseline_df.tail(20), width="stretch")
+# =========================================================
+# LIVE PAPER TRADE LEDGER
+# =========================================================
+if LEDGER_PATH.exists():
+    st.subheader("Live Paper Trade Ledger")
+    ledger = pd.read_parquet(LEDGER_PATH)
+    st.dataframe(ledger.tail(50), width="stretch")

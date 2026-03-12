@@ -1,0 +1,23 @@
+name: Retrain Models
+
+on:
+  schedule:
+    - cron: "0 12 * * 1-5"
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install worker dependencies
+        run: pip install -r requirements-worker.txt
+
+      - name: Retrain baseline
+        run: python -m services.retrain_pipeline
