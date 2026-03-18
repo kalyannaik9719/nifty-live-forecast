@@ -1,0 +1,40 @@
+name: Update Live Signal
+
+on:
+  schedule:
+    - cron: "*/5 * * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  update-signal:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy pyarrow requests scikit-learn joblib plotly streamlit torch pyro-ppl stable-baselines3 gymnasium
+
+      - name: Run live pipeline
+        run: |
+          python services/nse_live_fetch.py
+          python -m services.live_feature_builder
+          python services/nse_vix_fetch.py
+          python services/gamma_levels.py
+          python services/live_signal_engine.py
+
+      - name: Commit updated signal files
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add data/processed/live_signal.json data/raw/nse_vix_quote.parquet data/raw/nse_live_quote.parquet data/processed/live_features.parquet data/processed/gamma_levels.json
+          git diff --staged --quiet || git commit -m "Auto-update live signal"
+          git push

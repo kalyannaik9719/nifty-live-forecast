@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
+from torch.distributions import constraints
 
 import pyro
 import pyro.distributions as dist
@@ -92,7 +93,6 @@ def train_bnn(
     for _ in range(steps):
         svi.step(X_t, y_t)
 
-    torch.save({"dummy": 1}, artifact_dir / "bnn_model.pt")
     pyro.get_param_store().save(str(artifact_dir / "bnn_param_store.pt"))
     (artifact_dir / "bnn_meta.json").write_text(
         json.dumps(
@@ -100,6 +100,7 @@ def train_bnn(
             indent=2,
         )
     )
+    print("Saved BNN artifacts in", artifact_dir)
 
 
 def infer_bnn(latest_df: pd.DataFrame, artifact_dir: Path, samples: int = 200) -> dict:
@@ -117,11 +118,14 @@ def infer_bnn(latest_df: pd.DataFrame, artifact_dir: Path, samples: int = 200) -
     X_t = torch.tensor(Xs)
 
     pyro.clear_param_store()
+
+    # PyTorch 2.6+ safe-load compatibility for trusted local checkpoints
+    torch.serialization.add_safe_globals([constraints._Real])
     pyro.get_param_store().load(str(artifact_dir / "bnn_param_store.pt"))
 
     model = BayesianMLP(in_features=len(features))
     guide = AutoDiagonalNormal(model)
-    predictive = Predictive(model, guide=guide, num_samples=samples, return_sites=("obs", "_RETURN"))
+    predictive = Predictive(model, guide=guide, num_samples=samples, return_sites=("_RETURN",))
 
     out = predictive(X_t)
     means = out["_RETURN"].detach().cpu().numpy().reshape(-1)

@@ -15,95 +15,67 @@ BASELINE_PATH = Path("data/processed/paper_trades.parquet")
 RL_PATH = Path("data/processed/rl_trades.parquet")
 COMPARE_PATH = Path("data/processed/model_comparison.json")
 
-st.set_page_config(page_title="NIFTY Institutional AI Dashboard", layout="wide")
-st.title("NIFTY Institutional AI Dashboard")
-
-# =========================================================
-# LIVE SIGNAL ENGINE
-# =========================================================
-st.subheader("Live Decision Engine")
+st.set_page_config(page_title="NIFTY Quant Terminal", layout="wide")
+st.title("NIFTY Quant Terminal")
 
 if LIVE_SIGNAL_PATH.exists():
     with open(LIVE_SIGNAL_PATH, "r") as f:
         signal = json.load(f)
 
-    last_close = signal.get("last_close", 0)
-    regime = signal.get("regime", "unknown")
-    vix = signal.get("vix", None)
-    vix_regime = signal.get("vix_regime", "unknown")
+    st.subheader("Live Decision Engine")
 
-    baseline_signal = signal.get("baseline_signal", "NA")
-    baseline_prob = signal.get("baseline_prob_up", None)
+    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+    r1c1.metric("Last Close", f"{signal.get('last_close', 0):.2f}")
+    r1c2.metric("Final Signal", signal.get("final_signal", "NA"))
+    r1c3.metric("Reason", signal.get("reason", "NA"))
+    r1c4.metric("Regime", signal.get("regime", "NA"))
 
-    rl_signal = signal.get("rl_signal", "NA")
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    r2c1.metric("VIX", "NA" if signal.get("vix") is None else f"{signal.get('vix'):.2f}")
+    r2c2.metric("VIX Regime", signal.get("vix_regime", "NA"))
+    r2c3.metric("Gamma Support", "NA" if signal.get("gamma_support") is None else f"{signal.get('gamma_support'):.2f}")
+    r2c4.metric("Gamma Resistance", "NA" if signal.get("gamma_resistance") is None else f"{signal.get('gamma_resistance'):.2f}")
 
-    trend_agent = signal.get("trend_agent", "NA")
-    mean_agent = signal.get("mean_reversion_agent", "NA")
-    vol_agent = signal.get("volatility_agent", "NA")
-    final_agent_vote = signal.get("final_agent_vote", "NA")
+    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+    r3c1.metric("Baseline", signal.get("baseline_signal", "NA"))
+    r3c2.metric("RL", signal.get("rl_signal", "NA"))
+    r3c3.metric("LSTM", signal.get("lstm_direction", "NA"))
+    r3c4.metric("BNN", signal.get("bnn_direction", "NA"))
 
-    final_signal = signal.get("final_signal", "NA")
-    reason = signal.get("reason", "NA")
+    r4c1, r4c2, r4c3, r4c4 = st.columns(4)
+    r4c1.metric("Trend Agent", signal.get("trend_agent", "NA"))
+    r4c2.metric("Mean Reversion", signal.get("mean_reversion_agent", "NA"))
+    r4c3.metric("Volatility Agent", signal.get("volatility_agent", "NA"))
+    r4c4.metric("Agent Vote", signal.get("final_agent_vote", "NA"))
 
-    lstm_direction = signal.get("lstm_direction", "NA")
-    lstm_pred_return = signal.get("lstm_pred_return", None)
+    r5c1, r5c2, r5c3, r5c4 = st.columns(4)
+    r5c1.metric("BUY ABOVE", "NA" if signal.get("buy_above") is None else f"{signal.get('buy_above'):.2f}")
+    r5c2.metric("SELL BELOW", "NA" if signal.get("sell_below") is None else f"{signal.get('sell_below'):.2f}")
+    r5c3.metric("STOP LOSS", "NA" if signal.get("stop_loss") is None else f"{signal.get('stop_loss'):.2f}")
+    r5c4.metric("TARGET", "NA" if signal.get("target") is None else f"{signal.get('target'):.2f}")
 
-    bnn_direction = signal.get("bnn_direction", "NA")
-    bnn_confidence = signal.get("bnn_confidence", None)
-    bnn_std = signal.get("bnn_std_return", None)
+    r6c1, r6c2, r6c3, r6c4 = st.columns(4)
+    bprob = signal.get("baseline_prob_up")
+    bconf = signal.get("bnn_confidence")
+    bstd = signal.get("bnn_std_return")
+    pos = signal.get("position_size")
 
-    buy_level = signal.get("buy_level", None)
-    sell_level = signal.get("sell_level", None)
+    r6c1.metric("Baseline Prob Up", "NA" if bprob is None else f"{bprob:.2%}")
+    r6c2.metric("BNN Confidence", "NA" if bconf is None else f"{bconf:.2%}")
+    r6c3.metric("BNN Std", "NA" if bstd is None else f"{bstd:.5f}")
+    r6c4.metric("Position Size", "NA" if pos is None else f"{pos:.2%}")
 
-    position_size = signal.get("position_size", None)
+    if signal.get("lstm_pred_return") is not None:
+        st.info(f"LSTM Predicted Return: {signal.get('lstm_pred_return'):.5f}")
+
     warnings_list = signal.get("warnings", [])
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Last Close", f"{last_close:.2f}")
-    c2.metric("Final Signal", final_signal)
-    c3.metric("Reason", reason)
-    c4.metric("Regime", regime)
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("VIX", "NA" if vix is None else f"{vix:.2f}")
-    c6.metric("VIX Regime", vix_regime)
-    c7.metric("Baseline Signal", baseline_signal)
-    c8.metric("RL Signal", rl_signal)
-
-    c9, c10, c11, c12 = st.columns(4)
-    c9.metric("Trend Agent", trend_agent)
-    c10.metric("Mean Reversion Agent", mean_agent)
-    c11.metric("Volatility Agent", vol_agent)
-    c12.metric("Agent Vote", final_agent_vote)
-
-    c13, c14, c15, c16 = st.columns(4)
-    c13.metric("LSTM Direction", lstm_direction)
-    c14.metric("BNN Direction", bnn_direction)
-    c15.metric("Buy Level", "NA" if buy_level is None else f"{buy_level:.2f}")
-    c16.metric("Sell Level", "NA" if sell_level is None else f"{sell_level:.2f}")
-
-    c17, c18, c19, c20 = st.columns(4)
-    c17.metric("Baseline Prob Up", "NA" if baseline_prob is None else f"{baseline_prob:.2%}")
-    c18.metric("BNN Confidence", "NA" if bnn_confidence is None else f"{bnn_confidence:.2%}")
-    c19.metric("BNN Std", "NA" if bnn_std is None else f"{bnn_std:.5f}")
-    c20.metric("Position Size", "NA" if position_size is None else f"{position_size:.2%}")
-
-    if lstm_pred_return is not None:
-        st.info(f"LSTM Predicted Return: {lstm_pred_return:.5f}")
-
     if warnings_list:
         st.warning(" | ".join(warnings_list))
 
     st.caption(f"Last update: {signal.get('ts', 'unknown')}")
 
-else:
-    st.warning("Live signal file not found.")
-
 st.divider()
 
-# =========================================================
-# MODEL COMPARISON
-# =========================================================
 st.subheader("Backtest Model Comparison")
 
 if BASELINE_PATH.exists() and RL_PATH.exists():
@@ -115,85 +87,59 @@ if BASELINE_PATH.exists() and RL_PATH.exists():
         with open(COMPARE_PATH, "r") as f:
             compare = json.load(f)
 
-    baseline_equity = float(baseline_df["equity_curve"].iloc[-1])
-    rl_equity = float(rl_df["equity_curve"].iloc[-1])
+    b_eq = float(baseline_df["equity_curve"].iloc[-1])
+    r_eq = float(rl_df["equity_curve"].iloc[-1])
 
-    baseline_dd = (
-        (baseline_df["equity_curve"] - baseline_df["equity_curve"].cummax())
-        / baseline_df["equity_curve"].cummax()
-    ).min()
+    b_dd = ((baseline_df["equity_curve"] - baseline_df["equity_curve"].cummax()) / baseline_df["equity_curve"].cummax()).min()
+    r_dd = ((rl_df["equity_curve"] - rl_df["equity_curve"].cummax()) / rl_df["equity_curve"].cummax()).min()
 
-    rl_dd = (
-        (rl_df["equity_curve"] - rl_df["equity_curve"].cummax())
-        / rl_df["equity_curve"].cummax()
-    ).min()
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Baseline Equity", f"{baseline_equity:.4f}")
-    m2.metric("RL Equity", f"{rl_equity:.4f}")
-    m3.metric("Baseline Drawdown", f"{baseline_dd:.2%}")
-    m4.metric("RL Drawdown", f"{rl_dd:.2%}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Baseline Equity", f"{b_eq:.4f}")
+    c2.metric("RL Equity", f"{r_eq:.4f}")
+    c3.metric("Baseline Drawdown", f"{b_dd:.2%}")
+    c4.metric("RL Drawdown", f"{r_dd:.2%}")
 
     st.metric("Winner", compare.get("winner", "unknown"))
 
-    st.subheader("Equity Curve Comparison")
+    baseline_plot = baseline_df.copy()
+    baseline_plot["model"] = "Baseline"
 
-    bp = baseline_df.copy()
-    rp = rl_df.copy()
-    bp["model"] = "Baseline"
-    rp["model"] = "RL"
+    rl_plot = rl_df.copy()
+    rl_plot["model"] = "RL"
 
-    if "ts" in bp.columns and "ts" in rp.columns:
-        bp["ts"] = pd.to_datetime(bp["ts"])
-        rp["ts"] = pd.to_datetime(rp["ts"])
+    if "ts" in baseline_plot.columns and "ts" in rl_plot.columns:
+        baseline_plot["ts"] = pd.to_datetime(baseline_plot["ts"])
+        rl_plot["ts"] = pd.to_datetime(rl_plot["ts"])
 
-        plot_df = pd.concat(
-            [
-                bp[["ts", "equity_curve", "model"]],
-                rp[["ts", "equity_curve", "model"]],
-            ],
-            ignore_index=True,
-        )
-        fig = px.line(plot_df, x="ts", y="equity_curve", color="model")
+        plot_df = pd.concat([
+            baseline_plot[["ts", "equity_curve", "model"]],
+            rl_plot[["ts", "equity_curve", "model"]],
+        ], ignore_index=True)
+
+        fig = px.line(plot_df, x="ts", y="equity_curve", color="model", title="Equity Curve Comparison")
     else:
-        bp["idx"] = range(len(bp))
-        rp["idx"] = range(len(rp))
-        plot_df = pd.concat(
-            [
-                bp[["idx", "equity_curve", "model"]],
-                rp[["idx", "equity_curve", "model"]],
-            ],
-            ignore_index=True,
-        )
-        fig = px.line(plot_df, x="idx", y="equity_curve", color="model")
+        baseline_plot["idx"] = range(len(baseline_plot))
+        rl_plot["idx"] = range(len(rl_plot))
+
+        plot_df = pd.concat([
+            baseline_plot[["idx", "equity_curve", "model"]],
+            rl_plot[["idx", "equity_curve", "model"]],
+        ], ignore_index=True)
+
+        fig = px.line(plot_df, x="idx", y="equity_curve", color="model", title="Equity Curve Comparison")
 
     st.plotly_chart(fig, width="stretch")
 
-else:
-    st.warning("Backtest files not available yet.")
-
-st.divider()
-
-# =========================================================
-# RL ACTION DISTRIBUTION
-# =========================================================
 if RL_PATH.exists():
     st.subheader("RL Action Distribution")
-
     rl_df = pd.read_parquet(RL_PATH)
     if "action" in rl_df.columns:
         action_map = {0: "Short", 1: "Flat", 2: "Long"}
         actions = rl_df["action"].map(action_map).value_counts().reset_index()
         actions.columns = ["action", "count"]
-
         fig2 = px.bar(actions, x="action", y="count")
         st.plotly_chart(fig2, width="stretch")
 
-st.divider()
-
-# =========================================================
-# LIVE PAPER TRADE LEDGER
-# =========================================================
 if LEDGER_PATH.exists():
     st.subheader("Live Paper Trade Ledger")
     ledger = pd.read_parquet(LEDGER_PATH)

@@ -14,7 +14,7 @@ from stable_baselines3 import PPO
 
 from rl.trading_env import NiftyTradingEnv
 
-# Optional model imports
+# Optional imports
 try:
     from models.lstm_model import infer_lstm
 except Exception:
@@ -30,12 +30,14 @@ try:
 except Exception:
     ensemble_signal = None
 
+
 # ----------------------------
 # Paths
 # ----------------------------
 LIVE_FEATURES = Path("data/processed/live_features.parquet")
 HIST_PATH = Path("data/processed/nifty_regimes.parquet")
 VIX_PATH = Path("data/raw/nse_vix_quote.parquet")
+GAMMA_PATH = Path("data/processed/gamma_levels.json")
 
 BASELINE_MODEL = Path("data/processed/baseline_model.pkl")
 RL_MODEL = Path("data/processed/ppo_nifty")
@@ -99,6 +101,44 @@ def ensure_regime_code(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out["regime_code"] = 0.0
     return out
+
+
+def get_gamma_levels(live_row=None):
+    # First try actual gamma file
+    if GAMMA_PATH.exists():
+        try:
+            with open(GAMMA_PATH, "r") as f:
+                data = json.load(f)
+
+            gamma_support = data.get("gamma_support")
+            gamma_resistance = data.get("gamma_resistance")
+
+            if gamma_support is not None or gamma_resistance is not None:
+                return {
+                    "gamma_support": gamma_support,
+                    "gamma_resistance": gamma_resistance,
+                    "gamma_status": data.get("status", "ok"),
+                }
+        except Exception:
+            pass
+
+    # Fallback from live candle range
+    if live_row is not None:
+        low = safe_float(live_row.get("low"), None)
+        high = safe_float(live_row.get("high"), None)
+
+        return {
+            "gamma_support": low,
+            "gamma_resistance": high,
+            "gamma_status": "fallback_from_live_range",
+        }
+
+    # If nothing works
+    return {
+        "gamma_support": None,
+        "gamma_resistance": None,
+        "gamma_status": "missing",
+    }
 
 
 def baseline_signal(df: pd.DataFrame):
@@ -172,18 +212,26 @@ def get_bnn_outputs(latest_df: pd.DataFrame):
         "bnn_direction": "NA",
     }
 
-    if infer_bnn is None or not BNN_ART.exists():
+    if infer_bnn is None:
+        print("infer_bnn import failed")
+        return default
+
+    if not BNN_ART.exists():
+        print("BNN artifact folder missing:", BNN_ART)
         return default
 
     try:
         out = infer_bnn(latest_df, artifact_dir=BNN_ART)
+        print("BNN output:", out)
+
         return {
             "bnn_mean_return": safe_float(out.get("bnn_mean_return"), 0.0),
             "bnn_std_return": safe_float(out.get("bnn_std_return"), None),
             "bnn_confidence": safe_float(out.get("bnn_confidence"), None),
             "bnn_direction": out.get("bnn_direction", "NA"),
         }
-    except Exception:
+    except Exception as e:
+        print("BNN loading error:", e)
         return default
 
 
@@ -196,128 +244,152 @@ def get_multi_agent_outputs(df: pd.DataFrame):
     }
 
     if ensemble_signal is None:
+        print("ensemble_signal import failed")
         return default
 
     try:
         out = ensemble_signal(df)
+        print("Multi-agent output:", out)
+
         return {
             "trend_agent": out.get("trend_agent", "NA"),
             "mean_reversion_agent": out.get("mean_reversion_agent", "NA"),
             "volatility_agent": out.get("volatility_agent", "NA"),
             "final_agent_vote": out.get("final_agent_vote", "NA"),
         }
-    except Exception:
+    except Exception as e:
+        print("Multi-agent loading error:", e)
         return default
 
 
-def compute_position_size(
-    final_signal: str,
-    baseline_prob_up: float | None,
-    bnn_confidence: float | None,
-    vix: float | None,
+def build_final_signal(
+    regime,
+    vix,
+    baseline,
+    rl,
+    lstm,
+    bnn_conf,
+    final_agent_vote,
 ):
+    final_signal = "HOLD"
+    reason = "No alignment"
+    warnings = []
+
+    if vix is not None and vix > 22:
+        return "HOLD", "VIX too high", ["Avoid trade in extreme volatility"]
+
+    if regime == "high_vol":
+        warnings.append("High volatility regime")
+
+    if bnn_conf is not None and bnn_conf < 0.55:
+        return "HOLD", "Low BNN confidence", warnings + ["Low model confidence"]
+
+    votes = [baseline, rl, lstm, final_agent_vote]
+    long_votes = votes.count("LONG")
+    short_votes = votes.count("SHORT")
+
+    if regime in ["bull", "bear"]:
+        if long_votes >= 2:
+            final_signal = "LONG"
+            reason = "Trend alignment"
+        elif short_votes >= 2:
+            final_signal = "SHORT"
+            reason = "Trend alignment"
+
+    elif regime == "sideways":
+        if long_votes >= 3:
+            final_signal = "LONG"
+            reason = "Strong consensus"
+        elif short_votes >= 3:
+            final_signal = "SHORT"
+            reason = "Strong consensus"
+        else:
+            final_signal = "HOLD"
+            reason = "Sideways low edge"
+
+    elif regime == "high_vol":
+        if long_votes >= 3:
+            final_signal = "LONG"
+            reason = "High-vol breakout consensus"
+        elif short_votes >= 3:
+            final_signal = "SHORT"
+            reason = "High-vol breakdown consensus"
+        else:
+            final_signal = "HOLD"
+            reason = "High volatility disagreement"
+            warnings.append("Baseline/RL disagreement")
+
+    return final_signal, reason, warnings
+
+
+def compute_position_size(final_signal, baseline_prob_up, bnn_confidence, vix):
     if final_signal == "HOLD":
         return 0.0
 
     edge = 0.0
     if baseline_prob_up is not None:
-        edge = abs(baseline_prob_up - 0.5) * 2.0  # 0 to 1 scale
+        edge = abs(baseline_prob_up - 0.5) * 2.0
 
     conf = 0.5 if bnn_confidence is None else max(0.0, min(1.0, bnn_confidence))
 
-    vix_penalty = 1.0
+    vol_penalty = 1.0
     if vix is not None:
-        if vix >= 24:
-            vix_penalty = 0.25
+        if vix >= 22:
+            vol_penalty = 0.25
         elif vix >= 18:
-            vix_penalty = 0.5
+            vol_penalty = 0.5
         elif vix >= 13:
-            vix_penalty = 0.75
+            vol_penalty = 0.75
 
-    size = edge * conf * 0.02 * vix_penalty
+    size = edge * conf * 0.02 * vol_penalty
     return round(min(max(size, 0.0), 0.02), 4)
 
 
-def compute_levels(last_close: float, final_signal: str, volatility: float | None):
+def compute_trade_plan(last_close, final_signal, volatility, gamma_support, gamma_resistance):
+    if final_signal == "HOLD":
+        return {
+            "buy_above": None,
+            "sell_below": None,
+            "stop_loss": None,
+            "target": None,
+        }
+
     if volatility is None:
-        band = last_close * 0.003
+        sl_points = 80
     else:
-        band = max(last_close * 0.002, last_close * min(max(volatility * 2.0, 0.001), 0.01))
+        sl_points = max(60, min(150, int(last_close * volatility * 3)))
+
+    target_points = sl_points * 2
+
+    buy_above = None
+    sell_below = None
+    stop_loss = None
+    target = None
 
     if final_signal == "LONG":
-        buy_level = round(last_close, 2)
-        sell_level = round(last_close + band, 2)
+        buy_above = round(last_close + 5, 2)
+
+        if gamma_resistance is not None and buy_above >= float(gamma_resistance) - 20:
+            buy_above = round(float(gamma_resistance) + 5, 2)
+
+        stop_loss = round(buy_above - sl_points, 2)
+        target = round(buy_above + target_points, 2)
+
     elif final_signal == "SHORT":
-        buy_level = round(last_close - band, 2)
-        sell_level = round(last_close, 2)
-    else:
-        buy_level = None
-        sell_level = None
+        sell_below = round(last_close - 5, 2)
 
-    return buy_level, sell_level
+        if gamma_support is not None and sell_below <= float(gamma_support) + 20:
+            sell_below = round(float(gamma_support) - 5, 2)
 
+        stop_loss = round(sell_below + sl_points, 2)
+        target = round(sell_below - target_points, 2)
 
-def final_decision(
-    regime: str,
-    vix_label: str,
-    baseline_sig: str,
-    baseline_prob_up: float,
-    rl_sig: str,
-    trend_agent: str,
-    mean_agent: str,
-    vol_agent: str,
-    final_agent_vote: str,
-    lstm_direction: str,
-    bnn_direction: str,
-    bnn_std: float | None,
-):
-    warnings = []
-
-    if vix_label == "panic":
-        return "HOLD", "VIX panic regime", ["Panic volatility"]
-
-    if regime == "high_vol":
-        warnings.append("High volatility regime")
-
-    if bnn_std is not None and bnn_std > 0.01:
-        warnings.append("High forecast uncertainty")
-
-    model_votes = {"LONG": 0, "SHORT": 0, "HOLD": 0}
-
-    for sig in [baseline_sig, rl_sig, final_agent_vote, lstm_direction, bnn_direction]:
-        if sig in model_votes:
-            model_votes[sig] += 1
-
-    # strong high-vol filter
-    if vix_label == "elevated":
-        if baseline_sig != rl_sig:
-            return "HOLD", "High volatility disagreement", warnings + ["Baseline/RL disagreement"]
-        if final_agent_vote not in ["NA", baseline_sig]:
-            return "HOLD", "Agent conflict in elevated volatility", warnings + ["Multi-agent conflict"]
-
-    # if everything is noisy and baseline is neutral, do nothing
-    if baseline_sig == "HOLD" and rl_sig != "HOLD" and vix_label in ["elevated", "panic"]:
-        return "HOLD", "Baseline neutral / RL aggressive in high vol", warnings
-
-    # majority vote
-    final_signal = max(model_votes, key=model_votes.get)
-    reason = "Model vote consensus"
-
-    # if tie-ish behavior or weak consensus, hold
-    sorted_votes = sorted(model_votes.values(), reverse=True)
-    if len(sorted_votes) >= 2 and sorted_votes[0] == sorted_votes[1]:
-        return "HOLD", "No clear model consensus", warnings + ["Vote tie"]
-
-    # sideways override
-    if regime == "sideways" and final_signal != "HOLD":
-        if abs(baseline_prob_up - 0.5) < 0.08:
-            return "HOLD", "Sideways market with weak edge", warnings
-
-    # elevated vol, only allow if baseline and RL agree
-    if vix_label == "elevated" and not (baseline_sig == rl_sig == final_signal):
-        return "HOLD", "Elevated volatility without full agreement", warnings
-
-    return final_signal, reason, warnings
+    return {
+        "buy_above": buy_above,
+        "sell_below": sell_below,
+        "stop_loss": stop_loss,
+        "target": target,
+    }
 
 
 def run():
@@ -338,11 +410,11 @@ def run():
     # Baseline
     baseline_sig, baseline_prob_up = baseline_signal(latest_live)
 
-    # Sequence models
+    # Sequence model outputs
     lstm_out = get_lstm_outputs(seq_df)
     bnn_out = get_bnn_outputs(latest_live)
 
-    # Add context for RL / agents
+    # Add context for RL and agents
     latest_live["vix"] = 15.0 if vix is None else vix
     latest_live["vix_regime_code"] = vix_code
     latest_live["lstm_pred_return"] = lstm_out["lstm_pred_return"]
@@ -350,30 +422,26 @@ def run():
     latest_live["bnn_std_return"] = 0.01 if bnn_out["bnn_std_return"] is None else bnn_out["bnn_std_return"]
     latest_live["baseline_prob_up"] = baseline_prob_up
 
-    # Single RL
+    # RL
     rl_sig = single_rl_signal(latest_live)
 
-    # Multi-agent
+    # Multi-agent vote
     agent_out = get_multi_agent_outputs(latest_live)
 
-    # Final decision
+    # Final signal
     regime = str(latest_live["regime"].iloc[-1]) if "regime" in latest_live.columns else "unknown"
-    final_sig, reason, warnings = final_decision(
+
+    final_sig, reason, warnings = build_final_signal(
         regime=regime,
-        vix_label=vix_label,
-        baseline_sig=baseline_sig,
-        baseline_prob_up=baseline_prob_up,
-        rl_sig=rl_sig,
-        trend_agent=agent_out["trend_agent"],
-        mean_agent=agent_out["mean_reversion_agent"],
-        vol_agent=agent_out["volatility_agent"],
+        vix=vix,
+        baseline=baseline_sig,
+        rl=rl_sig,
+        lstm=lstm_out["lstm_direction"],
+        bnn_conf=bnn_out["bnn_confidence"],
         final_agent_vote=agent_out["final_agent_vote"],
-        lstm_direction=lstm_out["lstm_direction"],
-        bnn_direction=bnn_out["bnn_direction"],
-        bnn_std=bnn_out["bnn_std_return"],
     )
 
-    # Position size and levels
+    # Position sizing
     position_size = compute_position_size(
         final_signal=final_sig,
         baseline_prob_up=baseline_prob_up,
@@ -381,9 +449,25 @@ def run():
         vix=vix,
     )
 
+    # Gamma / fallback levels
+    live_row = latest_live.iloc[0].to_dict()
+    gamma = get_gamma_levels(live_row)
+
+    gamma_support = gamma["gamma_support"]
+    gamma_resistance = gamma["gamma_resistance"]
+    gamma_status = gamma["gamma_status"]
+
+    # Trade plan
     last_close = float(latest_live["close"].iloc[-1])
     volatility = safe_float(latest_live["volatility"].iloc[-1], None) if "volatility" in latest_live.columns else None
-    buy_level, sell_level = compute_levels(last_close, final_sig, volatility)
+
+    trade_plan = compute_trade_plan(
+        last_close=last_close,
+        final_signal=final_sig,
+        volatility=volatility,
+        gamma_support=gamma_support,
+        gamma_resistance=gamma_resistance,
+    )
 
     out = {
         "ts": str(latest_live["ts"].iloc[-1]),
@@ -407,9 +491,14 @@ def run():
         "bnn_confidence": bnn_out["bnn_confidence"],
         "final_signal": final_sig,
         "reason": reason,
-        "buy_level": buy_level,
-        "sell_level": sell_level,
         "position_size": position_size,
+        "gamma_support": gamma_support,
+        "gamma_resistance": gamma_resistance,
+        "gamma_status": gamma_status,
+        "buy_above": trade_plan["buy_above"],
+        "sell_below": trade_plan["sell_below"],
+        "stop_loss": trade_plan["stop_loss"],
+        "target": trade_plan["target"],
         "warnings": warnings,
     }
 
